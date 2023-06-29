@@ -18,7 +18,9 @@
 
 package org.apache.hudi.table.format;
 
+import org.apache.flink.table.data.RowData;
 import org.apache.hudi.common.util.Option;
+import org.apache.hudi.common.util.collection.Pair;
 import org.apache.hudi.util.RowDataCastProjection;
 import org.apache.hudi.util.RowDataProjection;
 
@@ -39,13 +41,7 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.BIGINT;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.DATE;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.DECIMAL;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.DOUBLE;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.FLOAT;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.INTEGER;
-import static org.apache.flink.table.types.logical.LogicalTypeRoot.VARCHAR;
+import static org.apache.flink.table.types.logical.LogicalTypeRoot.*;
 
 /**
  * CastMap is responsible for conversion of flink types when full schema evolution enabled.
@@ -165,9 +161,37 @@ public final class CastMap implements Serializable {
         }
         break;
       }
+      case ROW: {
+        if (from == ROW) {
+          if (fromType.getChildren().size() != toType.getChildren().size()) {
+            throw new IllegalArgumentException(String.format("Cannot create cast %s => %s, field num don't match.", fromType, toType));
+          }
+          Map<Integer, Pair<LogicalType, Function<Object, Object>>> colChangeInfo = getFieldIndexMapConvert(fromType, toType);
+          if (colChangeInfo == null) {
+            return null;
+          }
+          return row -> new CastRowData((RowData) row, colChangeInfo);
+        }
+        break;
+      }
       default:
     }
     return null;
+  }
+
+  private Map<Integer, Pair<LogicalType, Function<Object, Object>>> getFieldIndexMapConvert(LogicalType fromType, LogicalType toType) {
+    Map<Integer, Pair<LogicalType, Function<Object, Object>>> colChangeInfo = new HashMap<>(fromType.getChildren().size());
+    for (int i = 0; i < fromType.getChildren().size(); i++) {
+      if (fromType.getChildren().get(i).equals(toType.getChildren().get(i))) {
+        continue;
+      }
+      Function<Object, Object> subFieldConvertor = getConversion(fromType.getChildren().get(i), toType.getChildren().get(i));
+      if (subFieldConvertor == null) {
+        return null;
+      }
+      colChangeInfo.put(i, Pair.of(fromType.getChildren().get(i), subFieldConvertor));
+    }
+    return colChangeInfo;
   }
 
   private void add(int pos, Cast cast) {
